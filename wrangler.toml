@@ -1,0 +1,21 @@
+name = "ktn"
+main = "src/index.ts"
+compatibility_date = "2024-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[r2_buckets]]
+binding = "FEEDS_BUCKET"
+bucket_name = "ktn-feeds"
+
+[vars]
+MAX_ENTRIES = "25"
+MAX_MAILBOXES = "100"
+DEV_MODE = "false"
+
+[env.staging]
+name = "ktn-staging"
+vars = { MAX_ENTRIES = "25", MAX_MAILBOXES = "100", DEV_MODE = "true" }
+
+[[env.staging.r2_buckets]]
+binding = "FEEDS_BUCKET"
+bucket_name = "ktn-staging-feeds"
