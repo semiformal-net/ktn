@@ -96,7 +96,7 @@ If you're using a subdomain (e.g., `ktn.yourdomain.com`) instead of the root dom
 ### 8. Verify
 
 1. Visit `https://yourdomain.com/` — you should see the instructions page
-2. Send an email to `test@yourdomain.com`
+2. Send an email to `test@yourdomain.com` (or `test+SECRET@yourdomain.com` if you configured `NEW_MAILBOX_SECRET`)
 3. Check `https://yourdomain.com/feeds/test.atom` — the email should appear as a feed entry
 
 ## Local development
