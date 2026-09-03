@@ -160,8 +160,56 @@ function generateMessageId(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Clean email HTML: strip wrappers, remove scripts/iframes/forms, remove event handlers. */
-async function cleanEmailHtml(html: string): Promise<string> {
+// Drop-in replacement for cleanEmailHtml in src/index.ts
+// Adds: <style> removal, presentational-attribute stripping, tracking-param
+// scrubbing, image removal, hidden-preheader removal, and whitespace collapse.
+
+/** Attributes that carry layout/styling weight but no content. */
+const JUNK_ATTRS = new Set([
+  "style", "class", "bgcolor", "background", "align", "valign",
+  "width", "height", "cellpadding", "cellspacing", "border",
+  "role", "aria-hidden", "target", "rel", "id", "dir", "lang",
+]);
+
+/** Query params used purely for tracking or session auth. */
+const TRACKING_PARAMS = [
+  // LinkedIn — otpToken and loid are ACCOUNT-SCOPED AUTH TOKENS, not analytics.
+  "lipi", "midToken", "midSig", "trk", "trkEmail", "eid", "otpToken",
+  "loid", "refId", "trackingId", "originToLandingJobPostings", "origin",
+  // Generic
+  "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+  "gclid", "fbclid", "mc_cid", "mc_eid", "_hsenc", "_hsmi", "ck_subscriber_id",
+];
+
+function cleanUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    if (!/^https?:$/.test(u.protocol)) return "";
+    for (const p of TRACKING_PARAMS) u.searchParams.delete(p);
+    // Anything left that looks like a long opaque token is almost certainly
+    // tracking or session state, not a real query argument.
+    for (const [k, v] of [...u.searchParams]) {
+      if (v.length > 80) u.searchParams.delete(k);
+    }
+    return u.toString();
+  } catch {
+    return "";
+  }
+}
+
+/** True for the invisible preheader divs email clients use for preview text. */
+function isHiddenShim(style: string | null): boolean {
+  if (!style) return false;
+  const s = style.replace(/\s+/g, "").toLowerCase();
+  return (
+    s.includes("visibility:hidden") ||
+    s.includes("display:none") ||
+    /(^|;)(max-)?height:0(px)?(;|$)/.test(s) ||
+    s.includes("opacity:0")
+  );
+}
+
+export async function cleanEmailHtml(html: string): Promise<string> {
   if (!html) return "";
 
   const rewriter = new HTMLRewriter()
@@ -169,28 +217,62 @@ async function cleanEmailHtml(html: string): Promise<string> {
     .on("html", { element(el) { el.removeAndKeepContent(); } })
     .on("head", { element(el) { el.remove(); } })
     .on("body", { element(el) { el.removeAndKeepContent(); } })
-    // Remove dangerous/unwanted elements entirely
+
+    // Remove dangerous / zero-content elements entirely
     .on("script", { element(el) { el.remove(); } })
+    .on("style", { element(el) { el.remove(); } })   // was missing — often multi-KB
     .on("iframe", { element(el) { el.remove(); } })
     .on("object", { element(el) { el.remove(); } })
     .on("embed", { element(el) { el.remove(); } })
     .on("form", { element(el) { el.remove(); } })
     .on("link", { element(el) { el.remove(); } })
     .on("meta", { element(el) { el.remove(); } })
-    // Remove event handler attributes from all elements
+
+    // Images: tracking pixels, logos, and profile photos. None carry meaning
+    // in a job alert, and profile photo URLs are personally identifying.
+    .on("img", { element(el) { el.remove(); } })
+
+    // Flatten layout tables into their content
+    .on("table, tbody, thead, tfoot, tr, td, th, center, font", {
+      element(el) { el.removeAndKeepContent(); },
+    })
+
     .on("*", {
       element(el) {
-        for (const [name] of el.attributes) {
-          if (name.startsWith("on")) {
+        // Drop invisible preheader shims BEFORE stripping style
+        if (isHiddenShim(el.getAttribute("style"))) {
+          el.remove();
+          return;
+        }
+
+        // Clean links, drop the dead ones
+        if (el.tagName === "a") {
+          const cleaned = cleanUrl(el.getAttribute("href") ?? "");
+          if (cleaned) el.setAttribute("href", cleaned);
+          else el.removeAttribute("href");
+        }
+
+        // Collect first — mutating while iterating attributes is unsafe
+        const names = [...el.attributes].map(([n]) => n);
+        for (const name of names) {
+          if (name.startsWith("on") || JUNK_ATTRS.has(name)) {
             el.removeAttribute(name);
           }
         }
       },
     });
 
-  const response = rewriter.transform(new Response(html));
-  const result = await response.text();
-  return result.replace(/<!DOCTYPE[^>]*>/i, "").trim();
+  const result = await rewriter.transform(new Response(html)).text();
+
+  return result
+    .replace(/<!DOCTYPE[^>]*>/i, "")
+    // Zero-width and invisible padding characters used in preheaders
+    .replace(/[\u200B-\u200D\u034F\u00AD\uFEFF]/g, "")
+    .replace(/(&nbsp;|\s){2,}/g, " ")
+    // Collapse the empty wrappers left behind by the above
+    .replace(/<(div|span|p)>\s*<\/\1>/g, "")
+    .replace(/(<br\s*\/?>\s*){3,}/gi, "<br><br>")
+    .trim();
 }
 
 /** List all keys with a given prefix, paginating as needed. */
