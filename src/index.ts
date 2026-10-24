@@ -672,7 +672,7 @@ export default {
     }
 
     const url = new URL(request.url);
-    const path = url.pathname;
+    const path = url.pathname.toLowerCase();
 
     // Admin routes — bearer token required
     if (path.startsWith("/admin/")) {
