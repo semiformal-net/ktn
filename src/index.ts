@@ -89,7 +89,7 @@ function escapeXml(s: string): string {
 }
 
 /** Escape ]]> sequences so they don't break CDATA sections. */
-function escapeCdata(s: string): string {
+export function escapeCdata(s: string): string {
   return s.replace(/]]>/g, "]]]]><![CDATA[>");
 }
 

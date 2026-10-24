@@ -2,5 +2,7 @@ node_modules/
 .wrangler/
 .dev.vars
 test-emails.ts
+test-emails.worker.ts
+test-emails.wrangler.toml
 PLAN.md
 .git/
