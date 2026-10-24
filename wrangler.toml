@@ -12,6 +12,17 @@ MAX_ENTRIES = "25"
 MAX_MAILBOXES = "100"
 DEV_MODE = "false"
 
+[observability.logs]
+enabled = true
+invocation_logs = true
+head_sampling_rate = 1
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true
+
 [env.staging]
 name = "ktn-staging"
 vars = { MAX_ENTRIES = "25", MAX_MAILBOXES = "100", DEV_MODE = "true" }
