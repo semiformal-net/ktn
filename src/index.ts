@@ -160,41 +160,82 @@ function generateMessageId(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Drop-in replacement for cleanEmailHtml in src/index.ts
-// Adds: <style> removal, presentational-attribute stripping, tracking-param
-// scrubbing, image removal, hidden-preheader removal, and whitespace collapse.
-
-/** Attributes that carry layout/styling weight but no content. */
+/** Attributes that carry layout/styling weight but no content.
+ *  `id` is kept so in-page #anchor links still work. */
 const JUNK_ATTRS = new Set([
   "style", "class", "bgcolor", "background", "align", "valign",
   "width", "height", "cellpadding", "cellspacing", "border",
-  "role", "aria-hidden", "target", "rel", "id", "dir", "lang",
+  "role", "aria-hidden", "target", "rel", "dir", "lang",
 ]);
 
-/** Query params used purely for tracking or session auth. */
-const TRACKING_PARAMS = [
-  // LinkedIn — otpToken and loid are ACCOUNT-SCOPED AUTH TOKENS, not analytics.
-  "lipi", "midToken", "midSig", "trk", "trkEmail", "eid", "otpToken",
-  "loid", "refId", "trackingId", "originToLandingJobPostings", "origin",
-  // Generic
+/** Tracking params removed from every http(s) link. */
+const GENERIC_TRACKING_PARAMS = [
   "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
   "gclid", "fbclid", "mc_cid", "mc_eid", "_hsenc", "_hsmi", "ck_subscriber_id",
 ];
 
-function cleanUrl(raw: string): string {
+/** LinkedIn-only params. otpToken and loid are ACCOUNT-SCOPED AUTH TOKENS. */
+const LINKEDIN_TRACKING_PARAMS = [
+  "lipi", "midToken", "midSig", "trk", "trkEmail", "eid", "otpToken",
+  "loid", "refId", "trackingId", "originToLandingJobPostings", "origin",
+];
+
+/** Link schemes that are safe to keep as-is. */
+const SAFE_SCHEMES = new Set(["mailto:", "tel:"]);
+
+/** Decode the HTML entities that commonly appear in href values
+ *  (HTMLRewriter returns attribute values undecoded). */
+function decodeEntities(s: string): string {
+  return s.replace(/&(#x[0-9a-f]+|#\d+|amp|quot|apos|lt|gt);?/gi, (m, e: string) => {
+    const k = e.toLowerCase();
+    if (k[0] === "#") {
+      const code = k[1] === "x" ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : m;
+    }
+    return { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">" }[k] ?? m;
+  });
+}
+
+function isLinkedInHost(host: string): boolean {
+  return host === "linkedin.com" || host.endsWith(".linkedin.com");
+}
+
+/** Clean an href. Returns the new value, or null to drop the href
+ *  (javascript:, data:, and other unsafe or unknown schemes). */
+function cleanHref(raw: string): string | null {
+  const value = decodeEntities(raw).trim();
+  if (!value) return null;
+  // In-page anchors can't be parsed as absolute URLs; keep them.
+  if (value.startsWith("#")) return value;
+
+  let u: URL;
   try {
-    const u = new URL(raw);
-    if (!/^https?:$/.test(u.protocol)) return "";
-    for (const p of TRACKING_PARAMS) u.searchParams.delete(p);
-    // Anything left that looks like a long opaque token is almost certainly
-    // tracking or session state, not a real query argument.
+    u = new URL(value);
+  } catch {
+    // Relative links don't resolve in a feed reader. Drop them.
+    return null;
+  }
+
+  if (SAFE_SCHEMES.has(u.protocol)) return value;
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+
+  for (const p of GENERIC_TRACKING_PARAMS) u.searchParams.delete(p);
+
+  if (isLinkedInHost(u.hostname.toLowerCase())) {
+    for (const p of LINKEDIN_TRACKING_PARAMS) u.searchParams.delete(p);
+    // Long opaque values on LinkedIn links are tracking or session state.
     for (const [k, v] of [...u.searchParams]) {
       if (v.length > 80) u.searchParams.delete(k);
     }
-    return u.toString();
-  } catch {
-    return "";
   }
+  return u.toString();
+}
+
+/** True for 1x1 (or smaller) images: tracking pixels. */
+function isTrackingPixel(width: string | null, height: string | null): boolean {
+  const w = parseInt(width ?? "", 10);
+  const h = parseInt(height ?? "", 10);
+  return (w >= 0 && w <= 1) || (h >= 0 && h <= 1);
 }
 
 /** True for the invisible preheader divs email clients use for preview text. */
@@ -205,7 +246,7 @@ function isHiddenShim(style: string | null): boolean {
     s.includes("visibility:hidden") ||
     s.includes("display:none") ||
     /(^|;)(max-)?height:0(px)?(;|$)/.test(s) ||
-    s.includes("opacity:0")
+    /(^|;)opacity:0*(\.0+)?(;|$)/.test(s)
   );
 }
 
@@ -228,9 +269,14 @@ export async function cleanEmailHtml(html: string): Promise<string> {
     .on("link", { element(el) { el.remove(); } })
     .on("meta", { element(el) { el.remove(); } })
 
-    // Images: tracking pixels, logos, and profile photos. None carry meaning
-    // in a job alert, and profile photo URLs are personally identifying.
-    .on("img", { element(el) { el.remove(); } })
+    // Keep images, but drop 1x1 tracking pixels
+    .on("img", {
+      element(el) {
+        if (isTrackingPixel(el.getAttribute("width"), el.getAttribute("height"))) {
+          el.remove();
+        }
+      },
+    })
 
     // Flatten layout tables into their content
     .on("table, tbody, thead, tfoot, tr, td, th, center, font", {
@@ -245,17 +291,20 @@ export async function cleanEmailHtml(html: string): Promise<string> {
           return;
         }
 
-        // Clean links, drop the dead ones
-        if (el.tagName === "a") {
-          const cleaned = cleanUrl(el.getAttribute("href") ?? "");
-          if (cleaned) el.setAttribute("href", cleaned);
+        // Clean links, drop unsafe ones
+        if (el.tagName === "a" && el.hasAttribute("href")) {
+          const cleaned = cleanHref(el.getAttribute("href") ?? "");
+          if (cleaned !== null) el.setAttribute("href", cleaned);
           else el.removeAttribute("href");
         }
+
+        // Images keep their size so large ones don't render at full width
+        const keep = el.tagName === "img" ? new Set(["width", "height"]) : null;
 
         // Collect first — mutating while iterating attributes is unsafe
         const names = [...el.attributes].map(([n]) => n);
         for (const name of names) {
-          if (name.startsWith("on") || JUNK_ATTRS.has(name)) {
+          if (name.startsWith("on") || (JUNK_ATTRS.has(name) && !keep?.has(name))) {
             el.removeAttribute(name);
           }
         }
