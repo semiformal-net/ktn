@@ -7,12 +7,12 @@
     "deploy:staging": "wrangler deploy --env staging"
   },
   "dependencies": {
-    "postal-mime": "^2.4.1"
+    "postal-mime": "^2.7.6"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20241218.0",
+    "@cloudflare/workers-types": "^5.20261024.1",
     "@types/node": "^25.5.2",
     "typescript": "^5.7.2",
-    "wrangler": "^3.114.17"
+    "wrangler": "^4.152.0"
   }
 }
